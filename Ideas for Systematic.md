@@ -1,7 +1,5 @@
 Ideas for Systematic: 
 
-
-
 **Group A Returns and Momentum: how had the price been moving ?** 
 
 &#x20; - Log return (additive across time, roughly symmetric around 0, standard deviation log returns is the natural vol measure) -- Take them at different horizon (1d, 5d, 10d, 20d, 60d).
@@ -165,6 +163,13 @@ The primary signal typically fails when the instrument is moving for idiosyncrat
 &#x20;     - signal\_trend\_concord: sign(signal) \* sign(50d return). +1 signal agrees with longer-term trend, -1 disagree. +1 signal in a 50d downtrend statistically less reliable.
 
 &#x20;     - signal\_density\_20d: fraction of the last 20 days where primary signal was non-zero. Noisy primary that flips btw 0 and +-1 often is statistically diff from one that maintains positions.  
+
+**Group I: seasonality:**
+
+multiplication of gold and equity: cooper_gold_ratio 
+
+
+
 
 
 

@@ -29,13 +29,18 @@ def load_panel(
     signals_wide = signals_raw.set_index("date").sort_index()
 
     primary_signals = {}
-    for tk in list(primary_signals.keys()):
-        if tk in panel:
+    for tk in list(signals_wide.columns):
+        if tk not in panel:
             continue 
         ohlcv_idx = panel[tk].index
-        aligned = primary_signals[tk].reindex(ohlcv_idx).dropna().astype(int)
+        aligned = signals_wide[tk].reindex(ohlcv_idx).dropna().astype(int)
         primary_signals[tk] = aligned
-    
+
+    if tickers is None:
+        tickers = ENERGY
+    panel = {tk: panel[tk] for tk in tickers if tk in panel}
+    primary_signals = {tk: primary_signals[tk] for tk in tickers if tk in primary_signals}
+
     return panel, primary_signals
 
 if __name__ == "__main__":

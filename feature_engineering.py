@@ -3,6 +3,21 @@ import numpy as np
 
 from load_data import load_panel
 
+from dataclasses import dataclass, field
+from typing import Optional
+
+try:
+    from hmmlearn.hmm import GaussianHMM
+    _HAS_HMM = True
+except ImportError:
+    _HAS_HMM = False
+
+try:
+    from sklearn.mixture import GaussianMixture
+    _HAS_GMM = True
+except ImportError:
+    _HAS_GMM = False
+
 #Group A: Returns and Momentum Features
 def log_ret(c,n=1):
     return np.log(c) - np.log(c.shift(n))
@@ -171,6 +186,106 @@ def features_meanrev_trend(df):
 
     return out
 
+# Group E: Latent Regime Features 
+@dataclass 
+class LatentRegimeModels:
+    """
+    HMM + GMM fitted on a training fold, applied to any data.
+    
+    Usage:
+        regime = LatentRegimeModels(n_states=3).fit(train_df)
+        features_train = regime.transform(train_df)
+        features_test  = regime.transform(test_df)   # uses train-fold-fitted models
+    """
+    n_states: int = 2
+    random_state: int = 42
+    hmm_model: Optional[object] = field(default=None, init=False)
+    gmm_model: Optional[object] = field(default=None, init=False)
+    state_order: Optional[np.ndarray] = field(default=None, init=False)
+    
+    def _feature_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
+        """The (ret_5d, vol_yz_20d) input matrix used by both models."""
+        ret_5d = log_ret(df["close"], 5)
+        vol_yz = yang_zhang_vol(df["open"], df["high"], df["low"], df["close"], 20)
+        return pd.concat(
+            [ret_5d.rename("ret_5d"), vol_yz.rename("vol_yz_20d")],
+            axis=1,
+        )
+    
+    def fit(self, df_train: pd.DataFrame):
+        """Fit HMM and GMM on training-fold data only."""
+        if not _HAS_HMM or not _HAS_GMM:
+            raise ImportError("Install hmmlearn and scikit-learn for regime features.")
+        
+        X = self._feature_matrix(df_train).dropna()
+        
+        # Fit HMM
+        self.hmm_model = GaussianHMM(
+            n_components=self.n_states,
+            covariance_type="full",
+            n_iter=200,
+            random_state=self.random_state,
+        )
+        self.hmm_model.fit(X.values)
+        
+        # Sort states by mean return ascending: 0 = bear, 1 = chop, 2 = bull
+        means_ret = self.hmm_model.means_[:, 0]
+        self.state_order = np.argsort(means_ret)
+        
+        # Fit GMM
+        self.gmm_model = GaussianMixture(
+            n_components=self.n_states,
+            covariance_type="full",
+            random_state=self.random_state,
+        )
+        self.gmm_model.fit(X.values)
+        
+        return self
+    
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.hmm_model is None or self.gmm_model is None:
+            raise RuntimeError("Call .fit() before .transform().")
+        
+        X = self._feature_matrix(df)
+        
+        # Build column names
+        cols = (
+            [f"hmm_p_state{i}" for i in range(self.n_states)]
+            + ["hmm_state_persistence", "gmm_logdensity", "gmm_argmax"]
+        )
+        out = pd.DataFrame(np.nan, index=df.index, columns=cols)
+        
+        mask = X.notna().all(axis=1)
+        if mask.sum() == 0:
+            return out
+        
+        X_clean = X[mask].values
+        
+        # HMM posterior probabilities (reorder columns by state_order)
+        post = self.hmm_model.predict_proba(X_clean)
+        post = post[:, self.state_order]
+        for i in range(self.n_states):
+            out.loc[mask, f"hmm_p_state{i}"] = post[:, i]
+        
+        # HMM MAP state — same ordering
+        states_raw = self.hmm_model.predict(X_clean)
+        inv = np.argsort(self.state_order)
+        states_ordered = np.array([inv[s] for s in states_raw])
+        
+        # Persistence
+        states_series = pd.Series(np.nan, index=df.index, dtype=float)
+        states_series.loc[mask] = states_ordered
+        change = (states_series != states_series.shift(1)).astype(int)
+        grp = change.cumsum()
+        persistence = grp.groupby(grp).cumcount()
+        out.loc[mask, "hmm_state_persistence"] = persistence[mask].values
+        
+        # GMM features
+        out.loc[mask, "gmm_logdensity"] = self.gmm_model.score_samples(X_clean)
+        out.loc[mask, "gmm_argmax"] = self.gmm_model.predict(X_clean)
+        
+        return out
+
 if __name__ == "__main__":
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", None)
@@ -180,31 +295,70 @@ if __name__ == "__main__":
         signals_path="primary_signals.csv",
     )
     
-    feats_c = features_microstructure(panel["cl1s"])
-    feats_d = features_meanrev_trend(panel["cl1s"])
+    cl_df = panel["cl1s"]
     
-    print("Group C (microstructure) shape:", feats_c.shape)
-    print(feats_c.describe().round(4))
-
-    print("FINDING BUGS IN GROUP C")
-    print(feats_c.describe().apply(lambda x: x.map('{:.3e}'.format)))
-    print("Roll spread min:", feats_c["roll_spread_20d"].min())
-    dp = panel["cl1s"]["close"].diff()
-    cov_roll = (dp * dp.shift(1)).rolling(20).mean()
-    print("cov_roll: total =", len(cov_roll))
-    print("  NaN:", cov_roll.isna().sum())
-    print("  Positive (bad for Roll):", (cov_roll > 0).sum())
-    print("  Negative (good for Roll):", (cov_roll < 0).sum())
-    print("Roll spread breakdown:")
-    print("  Total rows:", len(feats_c))
-    print("  NaN values:", feats_c['roll_spread_20d'].isna().sum())
-    print("  Zero values:", (feats_c['roll_spread_20d'] == 0).sum())
-    print("  Positive values:", (feats_c['roll_spread_20d'] > 0).sum())
-    print("Volume zeros in cl1s:", (panel["cl1s"]["volume"] == 0).sum())
-
+    # ----- Fit regime models on training fold only (pre-2020) -----
+    train_end = pd.Timestamp("2019-12-31")
+    train_df = cl_df.loc[:train_end]
+    
+    print("=" * 60)
+    print("GROUP E — Latent Regime Features")
+    print("=" * 60)
+    print(f"Train fold: {train_df.index.min().date()} to {train_df.index.max().date()} "
+          f"({len(train_df)} rows)")
+    print(f"Full sample: {cl_df.index.min().date()} to {cl_df.index.max().date()} "
+          f"({len(cl_df)} rows)")
     print()
-    print("Group D (mean-rev/trend) shape:", feats_d.shape)
-    print(feats_d.describe().round(4))
-
-
-
+    
+    print("Fitting HMM and GMM on training fold...")
+    regime = LatentRegimeModels(n_states=2, random_state=42).fit(train_df)
+    print("Done.")
+    print()
+    
+    # ----- Inspect what the HMM learned -----
+    print("HMM state means (after ordering by mean return):")
+    print(f"{'State':<8} {'Label':<8} {'ret_5d':>10} {'vol_yz_20d':>12}")
+    labels = ["stressed", "normal"]
+    for i in range(2):
+        raw_state = regime.state_order[i]
+        m = regime.hmm_model.means_[raw_state]
+        print(f"{i:<8} {labels[i]:<8} {m[0]:>10.4f} {m[1]:>12.4f}")
+    print()
+    
+    print("HMM transition matrix (rows = from, cols = to, in ordered labels):")
+    inv = np.argsort(regime.state_order)
+    raw_tm = regime.hmm_model.transmat_
+  
+    ordered_tm = raw_tm[regime.state_order][:, regime.state_order]
+    print(pd.DataFrame(ordered_tm, index=labels, columns=labels).round(3))
+    print()
+    
+    # ----- Apply to full sample -----
+    feats_e = regime.transform(cl_df)
+    print(f"Group E shape: {feats_e.shape}")
+    print()
+    
+    print("Summary statistics:")
+    print(feats_e.describe().round(4))
+    print()
+    
+    # ----- Sanity checks -----
+    post_sum = feats_e[["hmm_p_state0", "hmm_p_state1"]].dropna().sum(axis=1)
+    print(f"Posterior probabilities sum to ~1 (valid rows only)?  "
+        f"mean={post_sum.mean():.6f}, std={post_sum.std():.2e}")
+    print(f"Warmup rows (NaN posteriors): {feats_e['hmm_p_state0'].isna().sum()}")
+    print()
+    
+    print("Last 5 days — recent regime state:")
+    print(feats_e[[
+        "hmm_p_state0", "hmm_p_state1",
+        "hmm_state_persistence", "gmm_logdensity", "gmm_argmax"
+    ]].tail().round(3))
+    print()
+    
+    # ----- Find the most anomalous days -----
+    print("Top 5 most anomalous days by GMM log-density:")
+    anomalies = feats_e.nsmallest(5, "gmm_logdensity")[
+        ["gmm_logdensity", "hmm_p_state0", "hmm_p_state1"]
+    ]
+    print(anomalies.round(3))
