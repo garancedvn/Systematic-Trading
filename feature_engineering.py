@@ -33,14 +33,15 @@ def parkinson_vol(high, low, window=20):
     return np.sqrt(factor * hl.rolling(window).mean())
 
 # More efficient than Parkinson 
-def garman_klass_vol(open, high, low, close, window=20):
-    hl = 0.5 * np.log(high / low) ** 2
-    oc = (2+ np.log(2)-1) * np.log(close / open) ** 2
-    return np.sqrt((hl - oc).rolling(window).mean())
+def garman_klass_vol(o, h, l, c, window: int = 20) -> pd.Series:
+    hl = 0.5 * np.log(h / l) ** 2
+    co = (2 * np.log(2) - 1) * np.log(c / o) ** 2
+    daily_var = (hl - co).clip(lower=0)             # ← clip before rolling
+    return np.sqrt(daily_var.rolling(window).mean())
 
-def rogers_satchell_vol(open, high, low, close, window=20):
-    rs = np.log(high / open) * np.log(high / close) + np.log(low / open) * np.log(low / close)
-    return np.sqrt(rs.rolling(window).mean())
+def rogers_satchell_vol(o, h, l, c, window: int = 20) -> pd.Series:
+    rs = np.log(h / c) * np.log(h / o) + np.log(l / c) * np.log(l / o)
+    return np.sqrt(rs.clip(lower=0).rolling(window).mean())
 
 def yang_zhang_vol(open, high, low, close, window=20):
     close_prev = close.shift(1)
@@ -77,17 +78,25 @@ def features_volatility(df):
     out["hl_range_close"] = ((high - low) / close).rolling(20).mean()
     return out
 
+# Group C: Microstructure Features
+
+
 
 if __name__ == "__main__":
     panel, primary_signals = load_panel()
-    feats_a = features_returns_momentum(panel["cl1s"])
-    print("Group A shape:", feats_a.shape)
-    print("Columns:", feats_a.columns.tolist())
+    feats_b = features_volatility(panel["cl1s"])
+    print("Group B shape:", feats_b.shape)
+    print("Columns:", feats_b.columns.tolist())
     print()
     print("Last 5 rows:")
-    print(feats_a.tail().round(4))
+    print(feats_b.tail().round(4))
     print()
     print("Summary statistics:")
-    print(feats_a.describe().round(4)) #Big crash 2020-2022 
+    print(feats_b.describe().round(4)) #Big crash 2020-2022 
 
+    # Add this at the end of your driver block
+    print("Comparison of mean daily vol across estimators (cl1s, full sample):")
+    for col in ["vol_cc_20d", "vol_parkinson_20d", "vol_garman_klass_20d",
+                "vol_rogers_satchell_20d", "vol_yang_zhang_20d"]:
+        print(f"  {col:30s} = {feats_b[col].mean():.5f}")
 
