@@ -79,24 +79,132 @@ def features_volatility(df):
     return out
 
 # Group C: Microstructure Features
+def features_microstructure(df):
+    close, volume = df["close"], df["volume"]
+    ret = log_ret(close)
+    dollar_vol = close * volume
+    out = pd.DataFrame(index=df.index)
 
+    # Amihud illiquidity: |return| per dollar of volume 
+    out["amihud_20d"] = (ret.abs() / dollar_vol.replace(0, np.nan)).rolling(20).mean()
 
+    # Roll's effective spread (only valid where Cov < 0)
+    dp = close.diff()
+    cov_roll = (dp * dp.shift(1)).rolling(20).mean()
+    out["roll_spread_20d"] = 2 * np.sqrt((-cov_roll).clip(lower=0))
+
+    # Volume z-score 
+    out["volume_zscore_20d"] = rolling_zscore(volume, 20)
+
+    # Log dollar volume-liquidity level 
+    out["dollar_volume_log"] = np.log(dollar_vol.replace(0, np.nan))
+
+    # Kyle's lambda: price impact per unit of volume
+    # How much does price move per unit of volume? Higher lambda = less liquid
+    abs_ret = ret.abs()
+    sqrt_v = np.sqrt(volume.replace(0, np.nan))
+    cov_kv = (abs_ret * sqrt_v).rolling(20).mean() - abs_ret.rolling(20).mean() * sqrt_v.rolling(20).mean()
+    var_v = sqrt_v.rolling(20).var()
+    out["kyle_lambda_20d"] = cov_kv / var_v.replace(0, np.nan)
+
+    return out
+
+# Group D: Mean-Reversion VS Trend 
+
+def features_meanrev_trend(df):
+    open, high, low, close = df["open"], df["high"], df["low"], df["close"]
+    out = pd.DataFrame(index=df.index)
+ 
+    # RSI 14 - Wilder's original EWMA-based formulation 
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    out["rsi_14"] = 100 - (100 / (1 + rs))
+
+    #Bollinger Band position: how close is price to upper/lower band? (in sigma units)
+    ma_20 = close.rolling(20).mean()
+    std_20 = close.rolling(20).std()
+    out["bb_position_20_2"] = (close - ma_20) / (2*std_20)
+
+    #MACD (12, 26, 9) - trend-following momentum indicator
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema_12 - ema_26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    out["macd_signal"] = macd_signal
+    out["macd_histogram"] = macd - macd_signal
+
+    #ADX 14 - average directional index, measures strength of trend (not direction)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean() / atr
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean() / atr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    out["adx_14"] = dx.ewm(alpha=1/14, adjust=False).mean()
+
+    # William %R 14 - measures overbought/oversold conditions, similar to RSI but inverted
+    highest_high_14 = high.rolling(14).max()
+    lowest_low_14 = low.rolling(14).min()
+    out["williams_r_14"] = -100 * (highest_high_14 - close) / (highest_high_14 - lowest_low_14).replace(0, np.nan)
+
+    # Distance from 200d MA in sigma units (using 60d sd)
+    ma_200 = close.rolling(200).mean()
+    std_60 = close.rolling(60).std()
+    out["distance_from_200d_ma"] = (close - ma_200) / std_60.replace(0, np.nan)
+
+    ## CCI 20 - commodity channel index, measures deviation from mean in terms of typical price
+    typical_price = (high + low + close) / 3
+    sma_typical = typical_price.rolling(20).mean()
+    mad_typical = (typical_price - sma_typical).abs().rolling(20).mean()
+    out["cci_20"] = (typical_price - sma_typical) / (0.015 * mad_typical).replace(0, np.nan)
+
+    return out
 
 if __name__ == "__main__":
-    panel, primary_signals = load_panel()
-    feats_b = features_volatility(panel["cl1s"])
-    print("Group B shape:", feats_b.shape)
-    print("Columns:", feats_b.columns.tolist())
-    print()
-    print("Last 5 rows:")
-    print(feats_b.tail().round(4))
-    print()
-    print("Summary statistics:")
-    print(feats_b.describe().round(4)) #Big crash 2020-2022 
+    pd.set_option("display.width", 200)
+    pd.set_option("display.max_columns", None)
+    
+    panel, primary_signals = load_panel(
+        ohlcv_path="ohlcv_data.csv",
+        signals_path="primary_signals.csv",
+    )
+    
+    feats_c = features_microstructure(panel["cl1s"])
+    feats_d = features_meanrev_trend(panel["cl1s"])
+    
+    print("Group C (microstructure) shape:", feats_c.shape)
+    print(feats_c.describe().round(4))
 
-    # Add this at the end of your driver block
-    print("Comparison of mean daily vol across estimators (cl1s, full sample):")
-    for col in ["vol_cc_20d", "vol_parkinson_20d", "vol_garman_klass_20d",
-                "vol_rogers_satchell_20d", "vol_yang_zhang_20d"]:
-        print(f"  {col:30s} = {feats_b[col].mean():.5f}")
+    print("FINDING BUGS IN GROUP C")
+    print(feats_c.describe().apply(lambda x: x.map('{:.3e}'.format)))
+    print("Roll spread min:", feats_c["roll_spread_20d"].min())
+    dp = panel["cl1s"]["close"].diff()
+    cov_roll = (dp * dp.shift(1)).rolling(20).mean()
+    print("cov_roll: total =", len(cov_roll))
+    print("  NaN:", cov_roll.isna().sum())
+    print("  Positive (bad for Roll):", (cov_roll > 0).sum())
+    print("  Negative (good for Roll):", (cov_roll < 0).sum())
+    print("Roll spread breakdown:")
+    print("  Total rows:", len(feats_c))
+    print("  NaN values:", feats_c['roll_spread_20d'].isna().sum())
+    print("  Zero values:", (feats_c['roll_spread_20d'] == 0).sum())
+    print("  Positive values:", (feats_c['roll_spread_20d'] > 0).sum())
+    print("Volume zeros in cl1s:", (panel["cl1s"]["volume"] == 0).sum())
+
+    print()
+    print("Group D (mean-rev/trend) shape:", feats_d.shape)
+    print(feats_d.describe().round(4))
+
+
 
