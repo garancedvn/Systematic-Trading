@@ -607,30 +607,165 @@ def features_seasonality(df):
 
     return out
 
-if __name__ == "__main__":
-    pd.set_option("display.width", 200)
-    pd.set_option("display.max_columns", None)
-    
-    panel, primary_signals = load_panel(
-        ohlcv_path="ohlcv_data.csv",
-        signals_path="primary_signals.csv",
+# Group J: Higher moments and range position 
+def autocorr_lag1(x):
+    """
+    Lag-1 autocorrelation of a series.
+    Positive = trending (consecutive moves same direction).
+    Negative = mean-reverting (consecutive moves reverse).
+    """
+    x = np.asarray(x, dtype=float)
+    if len(x) < 10 or np.std(x) == 0:
+        return np.nan
+    return np.corrcoef(x[:-1], x[1:])[0, 1]
+
+
+def features_higher_moments_range(df):
+    open, high, low, close = df["open"], df["high"], df["low"], df["close"]
+    out = pd.DataFrame(index=df.index)
+
+    ret = log_ret(close)
+
+    # Skew of recent returns - asymmetry of the return distribution
+    out["skew_20d"] = ret.rolling(20).skew()
+    out["skew_60d"] = ret.rolling(60).skew()
+
+    # Kurtosis - tail thickness, captures jump risk
+    out["kurt_20d"] = ret.rolling(20).kurt()
+
+    # Downside volatility - std of negative returns only, Sortino denominator
+    out["downside_vol_20d"] = ret.rolling(20).apply(
+        lambda x: np.std(x[x < 0]) if (x < 0).sum() > 1 else np.nan, raw=True
     )
+
+    # Position in 60d high-low range: 0 = at low, 1 = at high
+    hh_60 = high.rolling(60).max()
+    ll_60 = low.rolling(60).min()
+    out["price_range_position_60d"] = (close - ll_60) / (hh_60 - ll_60).replace(0, np.nan)
+
+    # Change in range position over 5 days - velocity of range positioning
+    out["range_position_5d_chg"] = out["price_range_position_60d"].diff(5)
+
+    # Return-vol correlation: leverage effect indicator
+    # Negative = drops drive vol spikes (canonical bear), positive = unusual
+    vol_yz = yang_zhang_vol(open, high, low, close, window=20)
+    out["return_vol_correl_60d"] = ret.rolling(60).corr(vol_yz.diff())
+
+    # Short-window Hurst, complements the 90d Hurst in Group F
+    ret_filled = ret.fillna(0.0)
+    out["return_autocorr_30d"] = rolling_apply_array(ret_filled, 30, autocorr_lag1)
+
+    return out
+
+FEATURE_GROUPS = {
+    "A_returns_momentum": [
+        "ret_1d", "ret_5d", "ret_10d", "ret_20d", "ret_60d",
+        "ret_20d_zscore", "mom_12_1", "roc_10d", "mom_3m_minus_1m",
+    ],
+    "B_volatility": [
+        "vol_cc_20d", "vol_parkinson_20d", "vol_garman_klass_20d",
+        "vol_rogers_satchell_20d", "vol_yang_zhang_20d",
+        "vol_of_vol_60d", "vol_yz_zscore_252d", "hl_range_close",
+    ],
+    "C_microstructure": [
+        "amihud_20d", "roll_spread_20d", "volume_zscore_20d",
+        "dollar_volume_log", "kyle_lambda_20d",
+    ],
+    "D_meanrev_trend": [
+        "rsi_14", "bb_position_20_2", "macd_signal", "macd_histogram",
+        "adx_14", "williams_r_14", "distance_from_200d_ma", "cci_20",
+    ],
+    "E_latent_regime": [
+        "hmm_p_state0", "hmm_p_state1", "hmm_state_persistence",
+        "gmm_logdensity", "gmm_argmax",
+    ],
+    "F_spectral_fractal": [
+        "dominant_cycle_period", "spectral_entropy",
+        "hurst_90d", "dfa_alpha_90d", "approx_entropy_20d",
+    ],
+    "G_cross_sectional": [
+        "corr_basket_60d", "xs_rank_5d", "xs_dispersion_20d",
+        "leadlag_anchor", "vol_ratio_basket", "beta_basket_60d",
+    ],
+    "H_signal_interaction": [
+        "primary_signal", "signal_changed", "signal_persistence",
+        "signal_trend_concord", "signal_density_20d",
+    ],
+    "I_seasonality": [
+        "day_of_year_sin", "day_of_year_cos",
+        "heating_season", "driving_season_progress",
+        "hurricane_season_indicator", "quarter_progress",
+    ],
+    "J_higher_moments_range": [
+        "skew_20d", "skew_60d", "kurt_20d", "downside_vol_20d",
+        "price_range_position_60d", "range_position_5d_chg",
+        "return_vol_correl_60d", "return_autocorr_30d"
+    ]
+}
+
+
+def build_features_single(df, primary_signal, regime_models=None,
+                          cross_sectional_inputs=None):
+    parts = [
+        features_returns_momentum(df),
+        features_volatility(df),
+        features_microstructure(df),
+        features_meanrev_trend(df),
+        features_spectral_fractal(df),
+        features_primary_signal_interaction(df, primary_signal),
+        features_seasonality(df),
+        features_higher_moments_range(df),
+    ]
     
-    print("=" * 60)
-    print("SEASONALITY FEATURES")
-    print("=" * 60)
+    if regime_models is not None:
+        parts.append(regime_models.transform(df))
     
-    feats_seas = features_seasonality(panel["cl1s"])
-    print(f"Seasonality shape: {feats_seas.shape}")
-    print(feats_seas.describe().round(4))
+    if cross_sectional_inputs is not None:
+        parts.append(features_cross_sectional(
+            df=df,
+            target_ticker=cross_sectional_inputs["target_ticker"],
+            panel=cross_sectional_inputs["panel"],
+            asset_class_tickers=cross_sectional_inputs["asset_class_tickers"],
+            anchor_ticker=cross_sectional_inputs.get("anchor_ticker"),
+        ))
     
-    # Inspect the seasonal ramps month by month
-    print("\n" + "=" * 60)
-    print("Seasonal ramp inspection — mean value by month (for cl1s):")
-    monthly = feats_seas.copy()
-    monthly["month"] = panel["cl1s"].index.month
-    print(monthly.groupby("month").mean().round(3))
+    return pd.concat(parts, axis=1)
+
+
+def build_features_panel(panel, primary_signals, asset_class_tickers,
+                         anchor_ticker=None, train_end_date=None,
+                         fit_regime_models=True):
+
+    if train_end_date is None:
+        train_end_date = pd.Timestamp("2019-12-31")
     
-    # Show first 30 days to see how features evolve through January
-    print("\nFirst 30 days (early January 1990):")
-    print(feats_seas.head(30).round(3))
+    out = {}
+    for tk in asset_class_tickers:
+        print(f"Building features for {tk}...")
+        
+        regime_models = None
+        if fit_regime_models:
+            train_df = panel[tk].loc[:train_end_date]
+            regime_models = LatentRegimeModels(n_states=2, random_state=42).fit(train_df)
+        
+        xs_inputs = {
+            "target_ticker": tk,
+            "panel": panel,
+            "asset_class_tickers": asset_class_tickers,
+            "anchor_ticker": anchor_ticker,
+        }
+        
+        out[tk] = build_features_single(
+            df=panel[tk],
+            primary_signal=primary_signals[tk],
+            regime_models=regime_models,
+            cross_sectional_inputs=xs_inputs,
+        )
+    
+    return out
+
+if __name__ == "__main__":
+    panel, primary_signals = load_panel()
+    feats_j = features_higher_moments_range(panel["cl1s"])
+    print("Group J shape:", feats_j.shape)
+    print(feats_j.describe().round(4))
