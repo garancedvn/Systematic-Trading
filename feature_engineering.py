@@ -189,6 +189,7 @@ def features_meanrev_trend(df):
 # Group E: Latent Regime Features 
 @dataclass 
 class LatentRegimeModels:
+    #train until 2021-12-30, and test on the rest 
     """
     HMM + GMM fitted on a training fold, applied to any data.
     
