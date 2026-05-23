@@ -538,6 +538,29 @@ def features_cross_sectional(df, target_ticker, panel, asset_class_tickers, anch
     
     return out
 
+# Group H: Primary Signal Interaction Features 
+
+def features_primary_signal_interaction(df, primary_signal):
+    out = pd.DataFrame(index=df.index)
+    signal_full = primary_signal.reindex(df.index)
+    signal = signal_full.dropna().astype(int)
+    
+    out["primary_signal"] = signal_full
+
+    out["signal_changed"] = (signal != signal.shift(1)).astype(int)
+
+    change = (signal != signal.shift(1)).astype(int)
+    grp = change.cumsum()
+    out["signal_persistence"] = grp.groupby(grp).cumcount()
+
+    ret_50 = log_ret(df["close"], 50)
+    concord_full = np.sign(signal_full) * np.sign(ret_50)
+    out["signal_trend_concord"] = concord_full
+
+    out["signal_density_20d"] = (signal!=0).rolling(20).mean()
+
+    return out 
+
 
 if __name__ == "__main__":
     pd.set_option("display.width", 200)
@@ -549,49 +572,26 @@ if __name__ == "__main__":
     )
     
     ENERGY = ["cl1s", "ho1s", "rb1s", "ng1s"]
-    ANCHOR = "cl1s"
     
     print("=" * 60)
-    print("GROUP G — Cross-Sectional Features")
+    print("GROUP H — Primary Signal Interaction Features")
     print("=" * 60)
     
-    feats_g = {}
     for tk in ENERGY:
-        feats_g[tk] = features_cross_sectional(
-            df=panel[tk],
-            target_ticker=tk,
-            panel=panel,
-            asset_class_tickers=ENERGY,
-            anchor_ticker=ANCHOR,
-        )
-        print(f"\n{tk} — Group G shape: {feats_g[tk].shape}")
-        print(feats_g[tk].describe().round(4))
+        df = panel[tk]
+        sig = primary_signals[tk]
+        feats_h = features_primary_signal_interaction(df, sig)
+        
+        # Restrict to the signal period for the summary stats
+        feats_signal_period = feats_h.loc[sig.index.min():sig.index.max()]
+        
+        print(f"\n{tk} — Group H over signal period:")
+        print(f"  Signal period: {sig.index.min().date()} to {sig.index.max().date()}")
+        print(f"  Shape: {feats_signal_period.shape}")
+        print(feats_signal_period.describe().round(4))
     
-    # Sanity check 1: xs_dispersion_20d should be identical across the four targets
-    # (since it's a property of the asset class, not the instrument)
+    # Show the last 10 days for cl1s to see persistence in action
     print("\n" + "=" * 60)
-    print("Sanity check 1: xs_dispersion_20d should be the same for all instruments")
-    disp_check = pd.DataFrame({tk: feats_g[tk]["xs_dispersion_20d"] for tk in ENERGY})
-    # Compute max difference across columns on each row, then overall max
-    max_diff = (disp_check.max(axis=1) - disp_check.min(axis=1)).max()
-    print(f"  Max difference across the 4 instruments: {max_diff:.6e}")
-    print("  (should be ~0 — it's the same statistic computed 4 times)")
-    
-    # Sanity check 2: at any date, the 4 xs_rank_5d values should average to 0.5
-    # (or sum to 2.0) since percentile ranks of 4 items always sum to 2.5
-    # Wait, let me think — with rank(pct=True), 4 items get {0.25, 0.5, 0.75, 1.0}
-    # which sum to 2.5. So the per-row average is 0.625.
-    print("\nSanity check 2: average xs_rank_5d across instruments")
-    rank_check = pd.DataFrame({tk: feats_g[tk]["xs_rank_5d"] for tk in ENERGY})
-    print(f"  Per-row mean of xs_rank_5d (should be ~0.625):")
-    print(f"    mean={rank_check.mean(axis=1).mean():.4f}, std={rank_check.mean(axis=1).std():.6f}")
-    print(f"  Per-row sum (should be ~2.5):")
-    print(f"    mean={rank_check.sum(axis=1).mean():.4f}, std={rank_check.sum(axis=1).std():.6f}")
-    
-    # Show recent values for each instrument
-    print("\n" + "=" * 60)
-    print("Recent values — June 2022:")
-    for tk in ENERGY:
-        print(f"\n{tk} (last 3 days):")
-        print(feats_g[tk][["corr_basket_60d", "xs_rank_5d", "xs_dispersion_20d",
-                           "leadlag_anchor", "vol_ratio_basket", "beta_basket_60d"]].tail(3).round(3))
+    print("Recent 10 days for cl1s — see signal_persistence in action:")
+    cl_feats_h = features_primary_signal_interaction(panel["cl1s"], primary_signals["cl1s"])
+    print(cl_feats_h.tail(10).round(3))
