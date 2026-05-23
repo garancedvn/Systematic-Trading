@@ -561,6 +561,51 @@ def features_primary_signal_interaction(df, primary_signal):
 
     return out 
 
+#Group I: Seasonality Features 
+def seasonal_ramp(months, days_in_month, start_month, peak_month, end_month):
+    month_frac = (months - 1) + (days_in_month - 1) / 31.0
+
+    diff = month_frac - (peak_month - 1)
+    diff = (diff + 6) % 12 - 6   # wrap to [-6, 6]
+    
+    # Distance from peak to start (negative direction) and to end (positive direction)
+    dist_to_start = (peak_month - start_month) % 12
+    if dist_to_start == 0:
+        dist_to_start = 1
+    dist_to_end = (end_month - peak_month) % 12
+    if dist_to_end == 0:
+        dist_to_end = 1
+    
+    # Ramp: 1 at the peak (diff=0), 0 at edges
+    ramp = np.where(
+        diff < 0,
+        1 + diff / dist_to_start,   # rising side
+        1 - diff / dist_to_end,     # falling side
+    )
+    return np.clip(ramp, 0, 1)
+
+def features_seasonality(df):
+    out = pd.DataFrame(index=df.index)
+
+    doy = df.index.dayofyear
+    out["day_of_year_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    out["day_of_year_cos"] = np.cos(2 * np.pi * doy / 365.25)
+
+    months = df.index.month
+    days_in_month = df.index.days_in_month
+    out["heating_season"] = seasonal_ramp(months, days_in_month, start_month=10, peak_month=1, end_month=4)
+
+    out["driving_season_progress"] = seasonal_ramp(months, days_in_month, start_month=4, peak_month=7, end_month=8)
+
+    out["hurricane_season_indicator"] = seasonal_ramp(months, days_in_month, start_month=6, peak_month=9, end_month=11)
+
+    quarter_starts = pd.Series(df.index, index= df.index).dt.to_period("Q").dt.start_time
+    quarter_ends = pd.Series(df.index, index= df.index).dt.to_period("Q").dt.end_time
+    quarter_length = (quarter_ends - quarter_starts).dt.days 
+    elapsed = (df.index - quarter_starts).dt.days
+    out["quarter_progress"] = elapsed / quarter_length.clip(lower=1).values 
+
+    return out
 
 if __name__ == "__main__":
     pd.set_option("display.width", 200)
@@ -571,27 +616,21 @@ if __name__ == "__main__":
         signals_path="primary_signals.csv",
     )
     
-    ENERGY = ["cl1s", "ho1s", "rb1s", "ng1s"]
-    
     print("=" * 60)
-    print("GROUP H — Primary Signal Interaction Features")
+    print("SEASONALITY FEATURES")
     print("=" * 60)
     
-    for tk in ENERGY:
-        df = panel[tk]
-        sig = primary_signals[tk]
-        feats_h = features_primary_signal_interaction(df, sig)
-        
-        # Restrict to the signal period for the summary stats
-        feats_signal_period = feats_h.loc[sig.index.min():sig.index.max()]
-        
-        print(f"\n{tk} — Group H over signal period:")
-        print(f"  Signal period: {sig.index.min().date()} to {sig.index.max().date()}")
-        print(f"  Shape: {feats_signal_period.shape}")
-        print(feats_signal_period.describe().round(4))
+    feats_seas = features_seasonality(panel["cl1s"])
+    print(f"Seasonality shape: {feats_seas.shape}")
+    print(feats_seas.describe().round(4))
     
-    # Show the last 10 days for cl1s to see persistence in action
+    # Inspect the seasonal ramps month by month
     print("\n" + "=" * 60)
-    print("Recent 10 days for cl1s — see signal_persistence in action:")
-    cl_feats_h = features_primary_signal_interaction(panel["cl1s"], primary_signals["cl1s"])
-    print(cl_feats_h.tail(10).round(3))
+    print("Seasonal ramp inspection — mean value by month (for cl1s):")
+    monthly = feats_seas.copy()
+    monthly["month"] = panel["cl1s"].index.month
+    print(monthly.groupby("month").mean().round(3))
+    
+    # Show first 30 days to see how features evolve through January
+    print("\nFirst 30 days (early January 1990):")
+    print(feats_seas.head(30).round(3))
