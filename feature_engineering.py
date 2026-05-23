@@ -285,6 +285,259 @@ class LatentRegimeModels:
         out.loc[mask, "gmm_argmax"] = self.gmm_model.predict(X_clean)
         
         return out
+    
+# Group F: Spectral and Fractal Feeatures 
+def rolling_apply_array(s, w, fn):
+    vals = s.values 
+    n = len(s)
+    out_vals = np.full(n, np.nan)
+    for i in range(w - 1, n):
+        window = vals[i - w + 1 : i + 1]
+        if np.all(np.isfinite(window)):
+            try:
+                out_vals[i] = fn(window)
+            except Exception:
+                out_vals[i] = np.nan
+    return pd.Series(out_vals, index=s.index)
+
+def dominant_cycle_period(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float)
+    if len(x) < 8 or np.std(x) == 0:
+        return np.nan
+    
+    t = np.arange(len(x))
+    coeffs = np.polyfit(t, x, 1)
+    detrended = x - np.polyval(coeffs, t)
+    
+    spec = np.abs(np.fft.rfft(detrended))
+    # Zero out: DC + the lowest 2 bins (which absorb residual trend curvature)
+    spec[:3] = 0
+    
+    if spec.sum() == 0:
+        return np.nan
+    
+    k = np.argmax(spec)
+    return len(x) / max(k, 1)
+
+def spectral_entropy(x):
+    spec = np.abs(np.fft.rfft(x - x.mean())) ** 2
+    spec = spec[1:]  # drop DC component
+    total = spec.sum()
+    
+    if total <= 0:
+        return np.nan
+    
+    p = spec / total
+    p = p[p > 0]
+    return -(p * np.log(p)).sum() / np.log(len(p))
+
+def hurst(x: np.ndarray) -> float:
+    """
+    Hurst exponent via the rescaled range (R/S) method.
+    Original Hurst-Mandelbrot estimator.
+    H ≈ 0.5: random walk
+    H > 0.5: persistent (trending)
+    H < 0.5: anti-persistent (mean-reverting)
+    """
+    x = np.asarray(x, dtype=float)
+    N = len(x)
+    if N < 20 or np.std(x) == 0:
+        return np.nan
+    
+    # Work on increments (returns), not levels
+    returns = np.diff(x)
+    if len(returns) < 10 or np.std(returns) == 0:
+        return np.nan
+    
+    # Build R/S for several scales
+    scales = []
+    rs_values = []
+    for n in [10, 20, 30, 40, 50, 60, 80]:
+        if n > len(returns):
+            break
+        # Split into chunks of size n
+        n_chunks = len(returns) // n
+        if n_chunks < 2:
+            continue
+        rs_chunk = []
+        for i in range(n_chunks):
+            chunk = returns[i * n : (i + 1) * n]
+            mean_c = chunk.mean()
+            z = np.cumsum(chunk - mean_c)
+            R = z.max() - z.min()         # range of cumulative deviations
+            S = np.std(chunk, ddof=1)     # std of chunk
+            if S > 0 and np.isfinite(R / S):
+                rs_chunk.append(R / S)
+        if len(rs_chunk) >= 1:
+            scales.append(n)
+            rs_values.append(np.mean(rs_chunk))
+    
+    if len(scales) < 3:
+        return np.nan
+    
+    # log(R/S) ~ H * log(n) for fBm
+    slope, _ = np.polyfit(np.log(scales), np.log(rs_values), 1)
+    return slope
+def dfa(x):
+    if len(x) < 16:
+        return np.nan
+    
+    y = np.cumsum(x - x.mean())
+    
+    scales = [s for s in [4, 8, 16] if s < len(x) // 2]
+    if len(scales) < 2:
+        return np.nan
+    
+    f = []
+    for s in scales:
+        n_segments = len(y) // s
+        rms_list = []
+        for i in range(n_segments):
+            seg = y[i * s : (i + 1) * s]
+            t = np.arange(s)
+            poly = np.polyfit(t, seg, 1)
+            trend = np.polyval(poly, t)
+            rms_list.append(np.sqrt(np.mean((seg - trend) ** 2)))
+        f.append(np.mean(rms_list) if rms_list else np.nan)
+    
+    f = np.array(f)
+    if np.any(~np.isfinite(f)) or np.any(f <= 0):
+        return np.nan
+    
+    slope, _ = np.polyfit(np.log(scales), np.log(f), 1)
+    return slope
+
+def approx_entropy(x: np.ndarray, m: int = 2, r_mult: float = 0.2) -> float:
+    """
+    Approximate entropy (Pincus 1991). Lower = more predictable.
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < m + 2:
+        return np.nan
+    
+    sd = np.std(x)
+    if sd == 0 or not np.isfinite(sd):
+        return np.nan
+    r = r_mult * sd
+    
+    def _phi(m_):
+        # Build all sub-sequences of length m_
+        N = n - m_ + 1
+        if N <= 0:
+            return np.nan
+        patterns = np.zeros((N, m_))
+        for i in range(N):
+            patterns[i] = x[i : i + m_]
+        
+        # For each pattern, count how many others are within r in Chebyshev distance
+        counts = np.zeros(N)
+        for i in range(N):
+            diff = np.abs(patterns - patterns[i])
+            max_diff = diff.max(axis=1)
+            counts[i] = np.sum(max_diff <= r) / N
+        
+        # Avoid log(0)
+        counts = np.where(counts > 0, counts, 1e-12)
+        return np.mean(np.log(counts))
+    
+    phi_m = _phi(m)
+    phi_m1 = _phi(m + 1)
+    
+    if not (np.isfinite(phi_m) and np.isfinite(phi_m1)):
+        return np.nan
+    return phi_m - phi_m1
+
+def features_spectral_fractal(df):
+    c = df["close"]
+    ret = log_ret(c).fillna(0.0)
+    log_c = np.log(c)
+    out = pd.DataFrame(index=df.index)
+    
+    out["dominant_cycle_period"] = rolling_apply_array(log_c, 60, dominant_cycle_period)
+    out["spectral_entropy"] = rolling_apply_array(ret, 60, spectral_entropy)
+    out["hurst_90d"] = rolling_apply_array(log_c, 90, hurst)
+    out["dfa_alpha_90d"] = rolling_apply_array(ret, 90, dfa)
+    out["approx_entropy_20d"] = rolling_apply_array(ret, 20, approx_entropy)
+    
+    return out
+
+# Group G: Cross-Sectional Features
+
+def features_cross_sectional(df, target_ticker, panel, asset_class_tickers, anchor_ticker=None):
+    peers = [t for t in asset_class_tickers if t != target_ticker]
+    out = pd.DataFrame(index=df.index)
+    idx = df.index
+
+    if len(peers) == 0:
+        for col in [
+            "corr_basket_60d", "xs_rank_5d", "xs_dispersion_20d",
+            "leadlag_anchor", "vol_ratio_basket", "beta_basket_60d",
+        ]:
+            out[col] = np.nan
+        return out
+    
+    # Target's returns at relevant horizons
+    ret_target_1d = log_ret(df["close"], 1)
+    ret_target_5d = log_ret(df["close"], 5)
+    ret_target_20d = log_ret(df["close"], 20)
+    
+    # Peer returns at three horizons, all aligned to target's index
+    peer_rets_1d = pd.DataFrame({
+        t: log_ret(panel[t]["close"], 1) for t in peers
+    }).reindex(idx)
+    peer_rets_5d = pd.DataFrame({
+        t: log_ret(panel[t]["close"], 5) for t in peers
+    }).reindex(idx)
+    peer_rets_20d = pd.DataFrame({
+        t: log_ret(panel[t]["close"], 20) for t in peers
+    }).reindex(idx)
+    
+    # Equal-weight basket return (peers only, target excluded)
+    basket_ret = peer_rets_1d.mean(axis=1)
+    
+    # Feature 1: 60-day correlation with basket
+    out["corr_basket_60d"] = ret_target_1d.rolling(60).corr(basket_ret)
+    
+    # Feature 2: cross-sectional rank of 5d return within asset class
+    all_5d = peer_rets_5d.copy()
+    all_5d[target_ticker] = ret_target_5d
+    ranks = all_5d.rank(axis=1, pct=True)
+    out["xs_rank_5d"] = ranks[target_ticker]
+    
+    # Feature 3: cross-sectional dispersion of 20d returns
+    all_20d = peer_rets_20d.copy()
+    all_20d[target_ticker] = ret_target_20d
+    out["xs_dispersion_20d"] = all_20d.std(axis=1)
+    
+    # Feature 4: 60-day correlation with lagged anchor (lead-lag relationship)
+    if anchor_ticker is not None and anchor_ticker != target_ticker and anchor_ticker in panel:
+        anchor_ret_lagged = log_ret(panel[anchor_ticker]["close"], 1).shift(1).reindex(idx)
+        out["leadlag_anchor"] = ret_target_1d.rolling(60).corr(anchor_ret_lagged)
+    else:
+        out["leadlag_anchor"] = np.nan
+    
+    # Feature 5: vol ratio (target / basket mean)
+    vol_target = yang_zhang_vol(
+        df["open"], df["high"], df["low"], df["close"], 20
+    )
+    vol_peers = pd.DataFrame({
+        t: yang_zhang_vol(
+            panel[t]["open"], panel[t]["high"], panel[t]["low"], panel[t]["close"], 20
+        ) for t in peers
+    }).reindex(idx)
+    out["vol_ratio_basket"] = vol_target / vol_peers.mean(axis=1).replace(0, np.nan)
+    
+    # Feature 6: 60-day rolling beta of target on basket
+    cov_tb = (
+        (ret_target_1d * basket_ret).rolling(60).mean()
+        - ret_target_1d.rolling(60).mean() * basket_ret.rolling(60).mean()
+    )
+    var_b = basket_ret.rolling(60).var()
+    out["beta_basket_60d"] = cov_tb / var_b.replace(0, np.nan)
+    
+    return out
+
 
 if __name__ == "__main__":
     pd.set_option("display.width", 200)
@@ -295,70 +548,50 @@ if __name__ == "__main__":
         signals_path="primary_signals.csv",
     )
     
-    cl_df = panel["cl1s"]
-    
-    # ----- Fit regime models on training fold only (pre-2020) -----
-    train_end = pd.Timestamp("2019-12-31")
-    train_df = cl_df.loc[:train_end]
+    ENERGY = ["cl1s", "ho1s", "rb1s", "ng1s"]
+    ANCHOR = "cl1s"
     
     print("=" * 60)
-    print("GROUP E — Latent Regime Features")
+    print("GROUP G — Cross-Sectional Features")
     print("=" * 60)
-    print(f"Train fold: {train_df.index.min().date()} to {train_df.index.max().date()} "
-          f"({len(train_df)} rows)")
-    print(f"Full sample: {cl_df.index.min().date()} to {cl_df.index.max().date()} "
-          f"({len(cl_df)} rows)")
-    print()
     
-    print("Fitting HMM and GMM on training fold...")
-    regime = LatentRegimeModels(n_states=2, random_state=42).fit(train_df)
-    print("Done.")
-    print()
+    feats_g = {}
+    for tk in ENERGY:
+        feats_g[tk] = features_cross_sectional(
+            df=panel[tk],
+            target_ticker=tk,
+            panel=panel,
+            asset_class_tickers=ENERGY,
+            anchor_ticker=ANCHOR,
+        )
+        print(f"\n{tk} — Group G shape: {feats_g[tk].shape}")
+        print(feats_g[tk].describe().round(4))
     
-    # ----- Inspect what the HMM learned -----
-    print("HMM state means (after ordering by mean return):")
-    print(f"{'State':<8} {'Label':<8} {'ret_5d':>10} {'vol_yz_20d':>12}")
-    labels = ["stressed", "normal"]
-    for i in range(2):
-        raw_state = regime.state_order[i]
-        m = regime.hmm_model.means_[raw_state]
-        print(f"{i:<8} {labels[i]:<8} {m[0]:>10.4f} {m[1]:>12.4f}")
-    print()
+    # Sanity check 1: xs_dispersion_20d should be identical across the four targets
+    # (since it's a property of the asset class, not the instrument)
+    print("\n" + "=" * 60)
+    print("Sanity check 1: xs_dispersion_20d should be the same for all instruments")
+    disp_check = pd.DataFrame({tk: feats_g[tk]["xs_dispersion_20d"] for tk in ENERGY})
+    # Compute max difference across columns on each row, then overall max
+    max_diff = (disp_check.max(axis=1) - disp_check.min(axis=1)).max()
+    print(f"  Max difference across the 4 instruments: {max_diff:.6e}")
+    print("  (should be ~0 — it's the same statistic computed 4 times)")
     
-    print("HMM transition matrix (rows = from, cols = to, in ordered labels):")
-    inv = np.argsort(regime.state_order)
-    raw_tm = regime.hmm_model.transmat_
-  
-    ordered_tm = raw_tm[regime.state_order][:, regime.state_order]
-    print(pd.DataFrame(ordered_tm, index=labels, columns=labels).round(3))
-    print()
+    # Sanity check 2: at any date, the 4 xs_rank_5d values should average to 0.5
+    # (or sum to 2.0) since percentile ranks of 4 items always sum to 2.5
+    # Wait, let me think — with rank(pct=True), 4 items get {0.25, 0.5, 0.75, 1.0}
+    # which sum to 2.5. So the per-row average is 0.625.
+    print("\nSanity check 2: average xs_rank_5d across instruments")
+    rank_check = pd.DataFrame({tk: feats_g[tk]["xs_rank_5d"] for tk in ENERGY})
+    print(f"  Per-row mean of xs_rank_5d (should be ~0.625):")
+    print(f"    mean={rank_check.mean(axis=1).mean():.4f}, std={rank_check.mean(axis=1).std():.6f}")
+    print(f"  Per-row sum (should be ~2.5):")
+    print(f"    mean={rank_check.sum(axis=1).mean():.4f}, std={rank_check.sum(axis=1).std():.6f}")
     
-    # ----- Apply to full sample -----
-    feats_e = regime.transform(cl_df)
-    print(f"Group E shape: {feats_e.shape}")
-    print()
-    
-    print("Summary statistics:")
-    print(feats_e.describe().round(4))
-    print()
-    
-    # ----- Sanity checks -----
-    post_sum = feats_e[["hmm_p_state0", "hmm_p_state1"]].dropna().sum(axis=1)
-    print(f"Posterior probabilities sum to ~1 (valid rows only)?  "
-        f"mean={post_sum.mean():.6f}, std={post_sum.std():.2e}")
-    print(f"Warmup rows (NaN posteriors): {feats_e['hmm_p_state0'].isna().sum()}")
-    print()
-    
-    print("Last 5 days — recent regime state:")
-    print(feats_e[[
-        "hmm_p_state0", "hmm_p_state1",
-        "hmm_state_persistence", "gmm_logdensity", "gmm_argmax"
-    ]].tail().round(3))
-    print()
-    
-    # ----- Find the most anomalous days -----
-    print("Top 5 most anomalous days by GMM log-density:")
-    anomalies = feats_e.nsmallest(5, "gmm_logdensity")[
-        ["gmm_logdensity", "hmm_p_state0", "hmm_p_state1"]
-    ]
-    print(anomalies.round(3))
+    # Show recent values for each instrument
+    print("\n" + "=" * 60)
+    print("Recent values — June 2022:")
+    for tk in ENERGY:
+        print(f"\n{tk} (last 3 days):")
+        print(feats_g[tk][["corr_basket_60d", "xs_rank_5d", "xs_dispersion_20d",
+                           "leadlag_anchor", "vol_ratio_basket", "beta_basket_60d"]].tail(3).round(3))
