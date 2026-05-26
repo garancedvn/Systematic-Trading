@@ -8,8 +8,6 @@ Ideas for Systematic:
 
 &#x20; - mom\_12\_1: twelve-minus-one momentum factor: 252-day return excluding the most recent 21 days. 
 
-&#x20; - roc\_10d: rate of change over 10 days almost same as ret\_10d but in simple-return 
-
 &#x20; - mom\_3m\_minus\_1m: 63 return minus 21 day return. Moment acceleration: positive if the longer term trend is stronger than the recent trend (sign of persistance), negative if recent action is much hotter than the broader trend (sign of exhaustion). 
 
 
@@ -17,7 +15,7 @@ Ideas for Systematic:
 **Group B Volatility Estimators:** 
 
 Basis: 
-
+test 
 &#x20;  - Baseline: basic vol estimator (but ignore intraday range)
 
 &#x20;  - Parkinson: Uses daily High and Low, but ignore the open and close not distinguish between trend up all day or ranged sideways
