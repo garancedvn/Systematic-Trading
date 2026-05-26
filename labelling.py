@@ -22,9 +22,9 @@ def generate_meta_labels(df, signals, p_mult=2.0, sl_mult=1.0, h=10):
         if pd.isna(vol):
             continue
 
-        upper_barrier = entry_price * np.exp(+p_mult * vol)
-        lower_barrier = entry_price * np.exp(-sl_mult * vol)
-
+        upper_barrier = entry_price * (1+p_mult * vol)
+        lower_barrier = entry_price * (1-sl_mult*vol)
+        
         start_pos = df.index.get_loc(idx) 
         end_pos = min(start_pos + h, len(df) - 1)
 
