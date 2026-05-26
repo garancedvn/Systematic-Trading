@@ -738,7 +738,7 @@ def build_features_panel(panel, primary_signals, asset_class_tickers,
                          fit_regime_models=True):
 
     if train_end_date is None:
-        train_end_date = pd.Timestamp("2019-12-31")
+        train_end_date = pd.Timestamp("2021-12-30")
     
     out = {}
     for tk in asset_class_tickers:
