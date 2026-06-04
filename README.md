@@ -7,7 +7,7 @@
 ## Repository Structure
 
 ```
-coursework_revision/
+coursework/
 │
 ├── README.md
 ├── coursework.ipynb
