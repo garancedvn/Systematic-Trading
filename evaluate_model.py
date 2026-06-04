@@ -79,9 +79,6 @@ META_FEATURES = [col for col in ml_df.columns if col not in LEAK_AND_ID and col 
 
 
 print(f"TOTAL META_FEATURES          : {len(META_FEATURES)}")
-print("\nListe complète :")
-for f in META_FEATURES:
-    print("  ", f)
 
 # --- [notebook cell 163] ------------------------------------------------
 # ============================================================
@@ -90,25 +87,17 @@ for f in META_FEATURES:
 
 n_total = len(ml_df)
 mask_nan = ml_df[META_FEATURES].isna().any(axis=1)
-print(f"Rows : {n_total} | with ≥1 NaN : {mask_nan.sum()} ({100*mask_nan.sum()/n_total:.1f}%)")
+print(f"Rows : {n_total} | with ≥1 NaN : {mask_nan.sum()})")
 
 missing_counts = ml_df[META_FEATURES].isna().sum()
 missing_counts = missing_counts[missing_counts > 0].sort_values(ascending=False)
 
-print("\nFeatures with NaN :")
-print(missing_counts.to_string() if len(missing_counts) else "  No one ✓")
-print("\nPercentage missing per feature:")
-print((100*missing_counts/n_total).to_string() if len(missing_counts) else "  0% per feature ✓")
 
 # --- [notebook cell 165] ------------------------------------------------
 high_missing = missing_counts[missing_counts > 0.01 * n_total].index.tolist()
 
 ml_df = ml_df[[c for c in ml_df.columns if c not in high_missing]]
 META_FEATURES = [c for c in META_FEATURES if c not in high_missing]
-
-print("Features with more than 1% missing values:")
-print("\n\nDeleted feautres:")
-print(high_missing)
 
 # --- [notebook cell 166] ------------------------------------------------
 # ============================================================
@@ -117,15 +106,9 @@ print(high_missing)
 
 n_total = len(ml_df)
 mask_nan = ml_df[META_FEATURES].isna().any(axis=1)
-print(f"Rows : {n_total} | with ≥1 NaN : {mask_nan.sum()} ({100*mask_nan.sum()/n_total:.1f}%)")
 
 missing_counts = ml_df[META_FEATURES].isna().sum()
 missing_counts = missing_counts[missing_counts > 0].sort_values(ascending=False)
-
-print("\nFeatures with NaN :")
-print(missing_counts.to_string() if len(missing_counts) else "  No one ✓")
-print("\nPercentage missing per feature:")
-print((100*missing_counts/n_total).to_string() if len(missing_counts) else "  0% per feature ✓")
 
 # --- [notebook cell 169] ------------------------------------------------
 # ============================================================
@@ -141,17 +124,6 @@ y_train = train_df["meta_label"].values.astype(int)
 X_test  = test_df[META_FEATURES]
 y_test  = test_df["meta_label"].values.astype(int)
 
-
-print(f"X_train : {X_train.shape}")
-print(f"X_test  : {X_test.shape} ")
-print(f"Nombre de features : {len(META_FEATURES)}")
-
-print(f"y_train : {y_train.shape}")
-print(f"y_test : {y_test.shape}")
-
-print(f"Distribution y_train : {np.bincount(y_train)}")
-print(f"Distribution y_test  : {np.bincount(y_test)}")
-
 # --- [notebook cell 170] ------------------------------------------------
 # ============================================================
 #  Identify Numerical and Categorical Features
@@ -166,15 +138,6 @@ numerical_features = [
     col for col in META_FEATURES
     if col not in categorical_features
 ]
-
-print("Number of categorical features:", len(categorical_features))
-print(categorical_features)
-
-print("\nNumber of numerical features:", len(numerical_features))
-print(numerical_features)
-
-print("\nCheck dtypes:")
-print(X_train[META_FEATURES].dtypes)
 
 # --- [notebook cell 171] ------------------------------------------------
 # One-hot en amont, une bonne fois pour toutes
@@ -279,17 +242,9 @@ n = len(X_train)
 block_size = n // n_splits
 embargo_obs = int(n * 0.01)
 
-print(f"Train size       : {n}")
-print(f"Block size       : {block_size} obs (~{block_size/252:.1f} ans daily)")
-print(f"Test per fold    : {block_size * k} obs ({k} blocs)")
-print(f"Train per fold   : {block_size * (n_splits - k)} obs ({n_splits-k} blocs - embargo)")
-print(f"Embargo          : {embargo_obs} obs")
-print(f"Nb folds         : {n_splits * (n_splits-1) // (k * 1) // 2 if k==2 else 'C(N,k)'}")
-
 
 # --- [notebook cell 177] ------------------------------------------------
 cpcv = CombinatorialPurgedCV(n_splits=n_splits, n_test_groups=k, embargo_pct=0.01)
-print(f"CPCV : {cpcv.get_n_splits()} folds générés (N={n_splits}, k={k})\n")
 
 # ======================================================================
 # SEMANTIC CLUSTERS
@@ -355,8 +310,6 @@ for feat, cl in feature_clusters.items():
 print(f"\n{len(clusters)} clusters formed:\n")
 for cl in sorted(clusters):
     members = clusters[cl]
-    print(f"  Cluster {cl} ({len(members)} features): {', '.join(members[:6])}"
-          + (f", ... (+{len(members)-6})" if len(members) > 6 else ""))
 
 # --- [notebook cell 209] ------------------------------------------------
 # ==============================================================================
@@ -480,21 +433,15 @@ for feat, cl in feature_clusters.items():
     clusters.setdefault(cl, []).append(feat)
 
 # Report, largest cluster first
-print(f"{len(clusters)} semantic clusters across {len(META_FEATURES)} features:\n")
 for cl in sorted(clusters, key=lambda c: -len(clusters[c])):
     members = clusters[cl]
-    preview = ", ".join(members[:6])
-    extra = f", ... (+{len(members) - 6})" if len(members) > 6 else ""
-    print(f"  {cl:26s} ({len(members):>2}): {preview}{extra}")
 
 # Safety checks
 assigned = sum(len(v) for v in clusters.values())
 assert assigned == len(META_FEATURES), f"Mismatch: {assigned} vs {len(META_FEATURES)}"
-print(f"\n✓ All {len(META_FEATURES)} features assigned.")
 
 if "Other" in clusters:
     print(f"⚠ 'Other' cluster contents: {clusters['Other']}")
-    print("  → If unexpected, add rules above to capture these features.")
 else:
     print("✓ No feature fell into 'Other'.")
 
