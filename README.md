@@ -10,7 +10,7 @@
 coursework_revision/
 │
 ├── README.md
-├── coursework_review.ipynb
+├── coursework.ipynb
 │
 ├── ohlcv_data.csv                  (given)
 ├── primary_signals.csv             (given)
@@ -26,7 +26,7 @@ coursework_revision/
 
 ## Files
 
-### `coursework_review.ipynb`
+### `coursework.ipynb`
 The main project notebook. It implements a full meta-labeling pipeline on top of a primary trading signal for energy futures contracts. The notebook is organized into seven phases:
 
 - **Phase 1 — Data Preparation:** loads and cleans OHLCV and signal data, filters the universe to the four energy instruments (WTI Crude Oil, Heating Oil, RBOB Gasoline, Natural Gas), and builds log returns.
