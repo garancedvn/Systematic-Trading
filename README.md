@@ -164,3 +164,32 @@ ohlcv_data.csv    primary_signals.csv    energy_external_h2_2022.csv
 - All models are trained on data up to `global_train_end_date` (the last date covering 80% of primary signal dates) and evaluated on the remaining 20%.
 - External data (VIX, DXY, OVX, yield curve, credit spreads) is fetched at runtime from Yahoo Finance and FRED. An internet connection and a FRED API key are required for Phase 2.14.
 - The notebook is designed to be run sequentially from top to bottom.
+
+
+## Version of Python and libraries to use 
+==================================================
+Python Version: 3.13.13
+==================================================
+Library              | Version        
+--------------------------------------------------
+NumPy                | 2.2.6          
+SciPy                | 1.17.0         
+Pandas               | 2.3.3          
+Pandas Datareader    | 0.10.0         
+Matplotlib           | 3.10.8         
+Plotly               | 6.7.0          
+Requests             | 2.32.5         
+YFinance             | 1.4.1          
+Scikit-Learn         | 1.8.0          
+XGBoost              | 3.2.0          
+LightGBM             | 4.6.0          
+PyTorch              | 2.12.0         
+Statsmodels          | 0.14.6         
+HMMLearn             | 0.3.3          
+TA-Lib               | 0.6.8          
+Optuna               | 4.8.0          
+Optuna Dashboard     | 0.20.0         
+SHAP                 | 0.52.0         
+TQDM                 | 4.67.3         
+Joblib               | 1.5.3          
+==================================================
